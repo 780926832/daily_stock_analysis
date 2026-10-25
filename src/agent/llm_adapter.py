@@ -10,6 +10,7 @@ import json
 import logging
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -52,6 +53,46 @@ from src.llm.provider_cache import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_nullable_string_enums(tools: List[dict]) -> List[dict]:
+    """Simplify equivalent enum schemas on the wire without changing descriptors.
+
+    A string-only enum already excludes null, so its string/null anyOf is
+    redundant. Moonshot requires a type beside such an enum and rejects the
+    otherwise valid JSON Schema emitted by some external tool catalogues.
+    """
+    def visit(schema):
+        if not isinstance(schema, dict):
+            return
+        branches = schema.get("anyOf")
+        values = schema.get("enum")
+        if (
+            "type" not in schema
+            and isinstance(branches, list) and len(branches) == 2
+            and {"type": "string"} in branches and {"type": "null"} in branches
+            and isinstance(values, list) and values
+            and all(isinstance(value, str) for value in values)
+        ):
+            schema.pop("anyOf")
+            schema["type"] = "string"
+        for key in ("properties", "patternProperties", "$defs", "definitions"):
+            children = schema.get(key)
+            if isinstance(children, dict):
+                for child in children.values():
+                    visit(child)
+        for key in ("items", "additionalProperties", "not", "if", "then", "else"):
+            visit(schema.get(key))
+        for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            children = schema.get(key)
+            if isinstance(children, list):
+                for child in children:
+                    visit(child)
+
+    normalized = deepcopy(tools)
+    for tool in normalized:
+        visit(tool.get("function", {}).get("parameters"))
+    return normalized
 
 
 def _resolve_litellm_exception(name: str) -> type[BaseException]:
@@ -705,7 +746,7 @@ class LLMToolAdapter:
             call_kwargs["extra_body"] = extra
 
         if tools:
-            call_kwargs["tools"] = tools
+            call_kwargs["tools"] = _normalize_nullable_string_enums(tools)
 
         # Use Router for primary model (multi-key), direct litellm for others
         use_channel_router = self._has_channel_config()

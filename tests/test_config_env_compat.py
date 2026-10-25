@@ -340,6 +340,25 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_hot_scheduled_pool_configuration(self, _mock_yaml, _mock_env):
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            config = Config._load_from_env()
+        self.assertEqual(config.schedule_stock_source, "watchlist")
+        self.assertEqual(config.schedule_hot_stock_count, 10)
+        Config.reset_instance()
+        with patch.dict(os.environ, {
+            "STOCK_LIST": "600519", "SCHEDULE_STOCK_SOURCE": "hot",
+            "SCHEDULE_HOT_STOCK_COUNT": "10", "SCHEDULE_TIMES": "12:00,18:00",
+            "LLM_ANALYSIS_MAX_TOKENS": "32768",
+        }, clear=True):
+            config = Config._load_from_env()
+        self.assertEqual(config.schedule_stock_source, "hot")
+        self.assertEqual(config.schedule_hot_stock_count, 10)
+        self.assertEqual(config.schedule_times, ["12:00", "18:00"])
+        self.assertEqual(config.llm_analysis_max_tokens, 32768)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_news_intel_envs_do_not_change_llm_runtime_contract(
         self,
         _mock_parse_litellm_yaml,

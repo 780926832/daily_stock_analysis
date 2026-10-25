@@ -77,6 +77,9 @@ def _run_scheduled_analysis_process(
     schedule_args_overrides = dict(schedule_args_overrides)
     scheduled_for = schedule_args_overrides.pop("_scheduled_for", None)
     service = RuntimeSchedulerService(schedule_args_overrides=schedule_args_overrides)
+    service._stock_selection_callback = lambda codes: result_queue.put({
+        "phase": "stock_selection", "stock_codes": list(codes),
+    })
     success = service._run_analysis_locked(
         stock_codes,
         scheduled_for=datetime.fromisoformat(scheduled_for) if scheduled_for else None,
@@ -291,6 +294,7 @@ class RuntimeSchedulerService:
         self._analysis_process: Optional[Any] = None
         self._analysis_process_lock = threading.Lock()
         self._analysis_generation = 0
+        self._stock_selection_callback: Optional[Callable[[List[str]], None]] = None
 
     def _make_schedule_args(self) -> SimpleNamespace:
         defaults = {
@@ -310,6 +314,8 @@ class RuntimeSchedulerService:
             "workers": None,
         }
         defaults.update(self._schedule_args_overrides)
+        if self._stock_selection_callback is not None:
+            defaults["_stock_selection_callback"] = self._stock_selection_callback
         return SimpleNamespace(**defaults)
 
     def _reload_config(self) -> Config:
@@ -498,6 +504,12 @@ class RuntimeSchedulerService:
         result_queue = None
         timeout_partial_context: Optional[Dict[str, Any]] = None
         try:
+            from src.services.scheduled_stock_selection import uses_hot_stock_pool
+
+            selection_pending = uses_hot_stock_pool(
+                self._config_provider(), self._make_schedule_args(), stock_codes,
+            )
+            expected_stock_codes = stock_codes
             context = multiprocessing.get_context("spawn")
             result_queue = context.Queue()
             overrides = dict(self._schedule_args_overrides)
@@ -524,7 +536,12 @@ class RuntimeSchedulerService:
                 if remaining <= 0:
                     break
                 try:
-                    result = result_queue.get(timeout=min(0.2, remaining))
+                    message = result_queue.get(timeout=min(0.2, remaining))
+                    if message.get("phase") == "stock_selection":
+                        expected_stock_codes = message["stock_codes"]
+                        selection_pending = False
+                        continue
+                    result = message
                 except Empty:
                     if not process.is_alive():
                         deadline = min(deadline, time.monotonic() + 2)
@@ -542,12 +559,13 @@ class RuntimeSchedulerService:
                     self._last_error = (
                         f"runtime scheduled analysis timed out after {timeout}s"
                     )
-                    timeout_partial_context = {
-                        "timeout_seconds": timeout,
-                        "run_started_at": run_started_at,
-                        "stock_codes": stock_codes,
-                        "generation": generation,
-                    }
+                    if not selection_pending:
+                        timeout_partial_context = {
+                            "timeout_seconds": timeout,
+                            "run_started_at": run_started_at,
+                            "stock_codes": expected_stock_codes,
+                            "generation": generation,
+                        }
                 return
 
             if result is None:

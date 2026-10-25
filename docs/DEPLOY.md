@@ -232,6 +232,9 @@ journalctl -u stock-analyzer -f
 |--------|--------|------|
 | `SCHEDULE_ENABLED` | `false` | 是否启用定时任务 |
 | `SCHEDULE_TIME` | `18:00` | 每日执行时间 |
+| `SCHEDULE_TIMES` | 空 | 每日多个执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` |
+| `SCHEDULE_STOCK_SOURCE` | `watchlist` | 定时股票池：`watchlist` 自选股，`hot` 每次刷新热门股 |
+| `SCHEDULE_HOT_STOCK_COUNT` | `10` | 热门股数量，范围 1–100 |
 | `MARKET_REVIEW_ENABLED` | `true` | 是否启用大盘复盘 |
 | `ANSPIRE_API_KEYS` | - | Anspire 大模型与新闻搜索（推荐） |
 | `AIHUBMIX_KEY` | - | AIHubMix 一 Key 多模型（推荐） |
@@ -240,6 +243,25 @@ journalctl -u stock-analyzer -f
 | `MINIMAX_API_KEYS` | - | MiniMax 搜索（可选） |
 
 ---
+
+### 每日热门股自动分析
+
+本地 Web/API 和 CLI `--schedule` 共用原有调度器。例如北京时间 12:00、18:00 各分析最新热门榜前 10 只并推送：
+
+```env
+SCHEDULE_ENABLED=true
+SCHEDULE_TIMES=12:00,18:00
+SCHEDULE_RUN_IMMEDIATELY=false
+SCHEDULE_STOCK_SOURCE=hot
+SCHEDULE_HOT_STOCK_COUNT=10
+TRADING_DAY_CHECK_ENABLED=true
+```
+
+在 Web 设置页的系统设置中可修改股票池、数量及执行时间。已有多时间点调度保持不变；时间表示开始分析，报告完成后发送到已配置通知渠道。请让服务持续运行，主机时区设为 `Asia/Shanghai`；电脑休眠或服务停止时不能准时执行。`TRADING_DAY_CHECK_ENABLED=true` 时 A 股休市日跳过热门榜获取、分析及推送。
+
+热门榜复用现有数据源降级：东方财富人气榜 → 东方财富飙升榜 → 雪球关注榜。每次执行重新请求，按榜单顺序规范代码、去重并选取指定数量；榜单不足或取数失败时任务明确失败，不使用自选股或旧榜替代。不会改写 `STOCK_LIST`，普通手动分析仍使用自选股或指定代码；显式 `--stocks`、Futu 持仓及仅大盘复盘优先。Web“立即运行”使用所选定时股票池。
+
+同一计划时刻按热门股模式与数量认领，跨进程共享数据库时避免重复抓榜和推送。运行超时时，部分完成通知只针对本次实际选中的股票。只保留一个调度入口；本功能不会创建 Codex 自动任务，也不会更改默认 GitHub Actions workflow 的自选股运行方式。回退时将 `SCHEDULE_STOCK_SOURCE=watchlist`；停止自动运行可设 `SCHEDULE_ENABLED=false`。
 
 ## 🌐 代理配置
 

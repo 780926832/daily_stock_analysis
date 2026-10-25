@@ -6,10 +6,12 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from threading import Event
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -513,6 +515,103 @@ class PortfolioPr2TestCase(unittest.TestCase):
         sectors = report["sector_concentration"]["top_sectors"]
         self.assertTrue(len(sectors) >= 1)
         self.assertEqual(sectors[0]["sector"], "UNCLASSIFIED")
+
+    def test_slow_industry_lookup_does_not_block_other_risk_or_spawn_duplicate_workers(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        self._create_position(account["id"], "600519")
+        release = Event()
+        started = Event()
+
+        def slow_lookup(_symbol):
+            started.set()
+            release.wait(timeout=5)
+            return [{"name": "白酒", "type": "行业"}]
+
+        with patch("src.services.portfolio_risk_service.SECTOR_LOOKUP_WAIT_SECONDS", 0.03), patch.object(
+            PortfolioRiskService, "_fetch_belong_boards", side_effect=slow_lookup,
+        ) as fetch:
+            worker = None
+            try:
+                started_at = time.monotonic()
+                response = self.client.get("/api/v1/portfolio/risk", params={
+                    "account_id": account["id"], "as_of": "2026-01-01", "include_realtime": "false",
+                })
+                self.assertLess(time.monotonic() - started_at, 1)
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(started.is_set())
+                self.assertEqual(payload["sector_concentration"]["coverage"]["lookup_pending_count"], 1)
+                self.assertEqual(payload["concentration"]["top_weight_pct"], 100)
+                self.assertEqual(payload["stop_loss"]["triggered_count"], 0)
+                self.assertTrue(payload["decision_signal_risk"]["available"])
+                worker = PortfolioRiskService._sector_refresh_event
+                second = self.client.get("/api/v1/portfolio/risk", params={
+                    "account_id": account["id"], "as_of": "2026-01-01", "include_realtime": "false",
+                })
+                self.assertEqual(second.status_code, 200)
+                self.assertEqual(fetch.call_count, 1)
+            finally:
+                release.set()
+                if worker is not None:
+                    self.assertTrue(worker.wait(timeout=2))
+
+            # A different service instance reuses the classification, but uses
+            # the updated portfolio amount rather than a cached risk report.
+            self.service.record_trade(account_id=account["id"], symbol="600519", trade_date=date(2026, 1, 1),
+                                      side="buy", quantity=10, price=100, market="cn", currency="CNY")
+            report = PortfolioRiskService().get_risk_report(
+                account_id=account["id"], as_of=date(2026, 1, 1), include_realtime=False,
+            )
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(report["sector_concentration"]["coverage"]["classified_count"], 1)
+            self.assertEqual(report["sector_concentration"]["top_sectors"][0]["market_value_base"], 2000)
+
+    def test_industry_failure_is_cached_without_hiding_other_risk(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        self._create_position(account["id"], "600519")
+        with patch.object(PortfolioRiskService, "_fetch_belong_boards", side_effect=RuntimeError("industry offline")) as fetch:
+            for _ in range(2):
+                report = PortfolioRiskService().get_risk_report(
+                    account_id=account["id"], as_of=date(2026, 1, 1), include_realtime=False,
+                )
+                self.assertEqual(report["sector_concentration"]["coverage"]["failed_count"], 1)
+                self.assertIn("industry offline", report["sector_concentration"]["errors"][0])
+                self.assertTrue(report["decision_signal_risk"]["available"])
+                self.assertIn("triggered_count", report["stop_loss"])
+            self.assertEqual(fetch.call_count, 1)
+
+            # Temporary upstream failures must not become permanent classifications.
+            fetch.side_effect = None
+            fetch.return_value = [{"name": "白酒", "type": "行业"}]
+            expired_at = time.monotonic() + 301
+            with patch("src.services.portfolio_risk_service.time.monotonic", return_value=expired_at):
+                recovered = PortfolioRiskService().get_risk_report(
+                    account_id=account["id"], as_of=date(2026, 1, 1), include_realtime=False,
+                )
+            self.assertEqual(fetch.call_count, 2)
+            self.assertEqual(recovered["sector_concentration"]["coverage"]["classified_count"], 1)
+
+    def test_etf_and_overseas_sectors_are_explicitly_unsupported_without_network_calls(self) -> None:
+        snapshot = {"total_market_value": 2000, "accounts": [{"base_currency": "CNY", "positions": [
+            {"symbol": "159599", "market": "cn", "market_value_base": 1000},
+            {"symbol": "HK02498", "market": "hk", "market_value_base": 1000},
+        ]}]}
+        with patch.object(PortfolioRiskService, "_fetch_belong_boards") as fetch:
+            block = self.risk_service._get_sector_concentration(snapshot, 35, as_of_date=date(2026, 1, 1))
+        fetch.assert_not_called()
+        self.assertEqual(block["coverage"]["unsupported_count"], 2)
+        self.assertEqual(block["coverage"]["unclassified_count"], 2)
+        self.assertEqual(block["coverage"]["lookup_pending_count"], 0)
+
+    def test_drawdown_excludes_empty_snapshots_before_first_ledger_activity(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        for day in (1, 2):
+            self.service.get_portfolio_snapshot(account_id=aid, as_of=date(2026, 1, day), include_realtime=False)
+        self.service.record_cash_ledger(account_id=aid, event_date=date(2026, 1, 3),
+                                        direction="in", amount=1000, currency="CNY")
+        report = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 3), include_realtime=False)
+        self.assertEqual(report["drawdown"]["series_points"], 1)
 
     @patch.object(PortfolioRiskService, "_fetch_belong_boards", return_value=[{"name": "白酒", "type": "行业"}])
     def test_sector_concentration_cn_board_mapping(self, _mock_fetch) -> None:

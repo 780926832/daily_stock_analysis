@@ -76,6 +76,8 @@ This does not change model routing, Phase 2 or Codex tool permissions. Affected 
 
 ### Codex Local Agent (Phase 6 Experimental Prototype)
 
+The Home setup check uses the selected Codex Chat backend's configuration and protocol checks, without requiring a separate LiteLLM API key. Passing the check means execution can be attempted; explicit `AGENT_MODE=false`, an unsupported architecture, or an invalid timeout still prevents readiness. Setting only `GENERATION_BACKEND=codex_cli` does not enable Codex Chat.
+
 `AGENT_BACKEND` selects only the runtime for the existing ask-stock Chat. It does not change regular reports, scheduled analysis, market review, the regular Agent analysis pipeline, LiteLLM Multi Agent, or Deep Research:
 
 ```env
@@ -331,6 +333,43 @@ AGENT_CONTEXT_PROTECTED_TURNS=
 Compression processes only visible `user` / `assistant` text under the same `session_id`. It does not process provider traces, thinking blocks, tool calls, or tool results, and it does not change same-turn tool passthrough. The presets are `cost` (6000 tokens / 2 protected turns), `balanced` (12000 / 4), and `long_context_raw_first` (24000 / 6). Blank trigger/protected values follow the selected profile; explicit values override it.
 
 For the single-agent ask-stock path, the backend also keeps a provider-aware trace track for DeepSeek V4 thinking + tool-call roundtrip. A trace is persisted only when the same run has both `tool_calls` and `reasoning_content`; the last 3 minimal protocol slices per `session_id + provider + model` are spliced back into the next request before the anchored visible assistant reply. Provider trace is either preserved exactly or dropped as a whole; it is never summarized, never returned by Web session-history APIs, and adds no `.env` setting. Model/provider mismatch, summarized anchors, or insufficient budget drop the whole trace. Claude extended thinking is limited in this PR to adapter/storage-level opaque `thinking` / `redacted_thinking` / `signature` block plumbing with offline fixtures; production end-to-end Claude and multi-agent trace injection remain follow-ups. Protocol references: DeepSeek thinking mode (<https://api-docs.deepseek.com/guides/thinking_mode>) and Anthropic Claude extended thinking (<https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking>). The LiteLLM compatibility window remains `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0` from `requirements.txt`.
+
+### Kimi Code K3 Configuration
+
+Kimi Code uses the OpenAI-compatible base URL `https://api.kimi.com/coding/v1`, with a different key and endpoint from the Moonshot open platform. Confirm that `/models` lists `k3` for your key. See the [official Kimi Code model documentation](https://www.kimi.com/code/docs/kimi-code/models.html).
+
+Set these values in `.env`:
+
+```env
+LLM_KIMI_API_KEY=your-kimi-code-key
+LITELLM_CONFIG=./litellm_config.kimi.yaml
+LITELLM_MODEL=openai/k3
+AGENT_LITELLM_MODEL=openai/k3
+GENERATION_BACKEND=litellm
+GENERATION_FALLBACK_BACKEND=
+AGENT_BACKEND=litellm
+AGENT_GENERATION_BACKEND=litellm
+LLM_TEMPERATURE=1.0
+LLM_ANALYSIS_MAX_TOKENS=32768
+```
+
+Create `litellm_config.kimi.yaml` in the project root (already ignored by Git):
+
+```yaml
+model_list:
+  - model_name: openai/k3
+    litellm_params:
+      model: openai/k3
+      api_base: https://api.kimi.com/coding/v1
+      api_key: os.environ/LLM_KIMI_API_KEY
+      reasoning_effort: max
+      allowed_openai_params: [reasoning_effort]
+      temperature: 1.0
+```
+
+`allowed_openai_params` passes the highest reasoning effort, `max`, through LiteLLM versions whose model catalogue does not yet include K3. Keep thinking enabled; disabling it changes model routing. Reports and default-model Ask-Stock share this channel. Restart the service or reload configuration through Settings after changes. Before dispatch, Ask-Stock simplifies string-only enums with a string/null `anyOf` into equivalent string enums to satisfy Kimi tool-schema validation. Original tool descriptors, accepted inputs, and MCP schemas remain unchanged.
+
+`LLM_ANALYSIS_MAX_TOKENS` controls the full stock-report completion budget: default 8192, range 1024–65536. Reasoning models may consume that same budget. Increase it, for example to 32768, if high-effort reports are truncated. This affects stock-report generation only, not Ask-Stock or market-review budgets. A higher cap can increase response time and model usage.
 
 ### Strict Temperature Model Compatibility Notes
 

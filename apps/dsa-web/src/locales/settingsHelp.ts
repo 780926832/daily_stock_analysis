@@ -167,6 +167,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响模型选择、路由、fallback 和可用模型声明。'],
     notes: ['如果 YAML 配置失效，系统会回退到渠道或 legacy 配置路径。'],
   },
+  'settings.ai_model.LLM_ANALYSIS_MAX_TOKENS': {
+    title: '个股报告输出预算',
+    summary: '限制完整个股报告的输出 token 总量。',
+    usage: '默认 8192，范围 1024–65536；K3 max 推理的完整报告可设为 32768。',
+    valueNotes: ['推理 token 也可能计入输出预算，预算不足会导致 JSON 报告截断。'],
+    impact: ['影响个股报告的可用输出长度，不改变问股或大盘复盘的预算。'],
+    notes: ['提高上限可能增加响应时间和模型用量；实际额度与限制由供应商决定。'],
+  },
   'settings.ai_model.LLM_TEMPERATURE': {
     title: 'Temperature',
     summary: '控制模型输出随机性。',
@@ -1422,6 +1430,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['A valid model_list has higher priority than channels and legacy keys.', 'The Web channel editor does not edit the YAML file.'],
     impact: ['Affects model routing, fallbacks, and available model declarations.'],
     notes: ['If the YAML cannot be parsed, the system falls back to channels or legacy configuration.'],
+  },
+  'settings.ai_model.LLM_ANALYSIS_MAX_TOKENS': {
+    title: 'Stock Report Output Budget',
+    summary: 'Limits completion tokens for full stock reports.',
+    usage: 'Default 8192, range 1024–65536. K3 max-reasoning reports can use 32768.',
+    valueNotes: ['Reasoning may consume the same completion budget; insufficient room can truncate JSON.'],
+    impact: ['Changes stock-report output capacity, not Ask-Stock or market-review budgets.'],
+    notes: ['A higher cap can increase response time and model usage; provider limits still apply.'],
   },
   'settings.ai_model.LLM_TEMPERATURE': {
     title: 'Temperature',

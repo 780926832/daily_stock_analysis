@@ -25,6 +25,38 @@ from src.services import stock_list_parser as stock_list_parser_module
 
 class TestStorage(unittest.TestCase):
 
+    def test_analysis_context_preserves_missing_measurements_without_ratio(self):
+        """A price-only daily cache must remain usable without invented volume."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+        try:
+            for today_volume, yesterday_volume, today_close in (
+                (None, 100, 11.0), (0, 100, 11.0),
+                (50, 0, 11.0), (50, 100, None),
+            ):
+                with self.subTest(volume=today_volume, prior_volume=yesterday_volume, close=today_close):
+                    db.save_daily_data(pd.DataFrame([
+                        {'date': date(2026, 10, 19), 'close': 10.0, 'volume': yesterday_volume},
+                        {'date': date(2026, 10, 20), 'close': today_close, 'volume': today_volume},
+                    ]), code='159218', data_source='test-price-only')
+                    context = db.get_analysis_context('159218')
+                    self.assertEqual(context['date'], '2026-10-20')
+                    self.assertEqual(context['today']['volume'], today_volume)
+                    self.assertEqual(context['today']['close'], today_close)
+                    if today_volume is None or yesterday_volume == 0:
+                        self.assertNotIn('volume_change_ratio', context)
+                    else:
+                        self.assertEqual(context['volume_change_ratio'], today_volume / yesterday_volume)
+                    if today_close is None:
+                        self.assertNotIn('price_change_ratio', context)
+                    else:
+                        self.assertEqual(context['price_change_ratio'], 10.0)
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
     @staticmethod
     def _list_sqlite_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
         with sqlite3.connect(db_path) as conn:

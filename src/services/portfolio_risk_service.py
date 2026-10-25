@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections import OrderedDict
 from datetime import date, timedelta
+from threading import Event, Lock, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
+from data_provider.base import _is_etf_code
 from src.config import Config, get_config
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.decision_signal_service import DecisionSignalService
@@ -16,10 +20,20 @@ from src.services.portfolio_service import PortfolioService
 logger = logging.getLogger(__name__)
 
 DEFENSIVE_DECISION_SIGNAL_ACTIONS = ("sell", "reduce", "alert")
+SECTOR_LOOKUP_WAIT_SECONDS = 2.0
+SECTOR_CACHE_TTL_SECONDS = 24 * 60 * 60
+SECTOR_FAILURE_CACHE_TTL_SECONDS = 5 * 60
+SECTOR_CACHE_MAX_ENTRIES = 2048
 
 
 class PortfolioRiskService:
     """Compute portfolio risk blocks on top of replayed snapshot data."""
+
+    # Only public classifications are cached, never portfolio weights or balances.
+    # One daemon refresh across requests bounds work even if an upstream hangs.
+    _sector_lock = Lock()
+    _sector_cache: OrderedDict = OrderedDict()
+    _sector_refresh_event: Optional[Event] = None
 
     def __init__(
         self,
@@ -65,7 +79,7 @@ class PortfolioRiskService:
             thresholds["concentration_alert_pct"],
             as_of_date=as_of_date,
         )
-        sector_concentration = self._build_sector_concentration(
+        sector_concentration = self._get_sector_concentration(
             snapshot,
             thresholds["concentration_alert_pct"],
             as_of_date=as_of_date,
@@ -324,6 +338,7 @@ class PortfolioRiskService:
         threshold_pct: float,
         *,
         as_of_date: date,
+        fetch_missing: bool = True,
     ) -> Dict[str, Any]:
         total_mv = float(snapshot.get("total_market_value", 0.0) or 0.0)
         sector_exposure: Dict[str, float] = {}
@@ -332,6 +347,8 @@ class PortfolioRiskService:
             "classified_count": 0,
             "unclassified_count": 0,
             "failed_count": 0,
+            "unsupported_count": 0,
+            "lookup_pending_count": 0,
         }
         errors: List[str] = []
         board_cache: Dict[Tuple[str, str], str] = {}
@@ -358,6 +375,7 @@ class PortfolioRiskService:
                     board_cache=board_cache,
                     coverage=coverage,
                     errors=errors,
+                    fetch_missing=fetch_missing,
                 )
                 sector_exposure[sector] = sector_exposure.get(sector, 0.0) + converted
                 sector_symbols.setdefault(sector, set()).add(symbol)
@@ -386,6 +404,80 @@ class PortfolioRiskService:
             "errors": errors[:20],
         }
 
+    def _get_sector_concentration(
+        self, snapshot: Dict[str, Any], threshold_pct: float, *, as_of_date: date,
+    ) -> Dict[str, Any]:
+        """Return local risk promptly while one bounded worker warms sector data.
+
+        Waiting is bounded; the existing provider calls continue in the daemon.
+        Later requests reuse completed classifications and do not queue workers.
+        """
+        cached = self._build_sector_concentration(
+            snapshot, threshold_pct, as_of_date=as_of_date, fetch_missing=False,
+        )
+        if not cached["coverage"]["lookup_pending_count"]:
+            return cached
+
+        cls = PortfolioRiskService
+        with cls._sector_lock:
+            event = cls._sector_refresh_event
+            start_worker = event is None
+            if start_worker:
+                event = Event()
+                cls._sector_refresh_event = event
+
+        if start_worker:
+            def refresh() -> None:
+                try:
+                    self._build_sector_concentration(
+                        snapshot, threshold_pct, as_of_date=as_of_date,
+                    )
+                except Exception:
+                    logger.exception("Portfolio industry classification refresh failed")
+                finally:
+                    with cls._sector_lock:
+                        cls._sector_refresh_event = None
+                    event.set()
+
+            try:
+                Thread(target=refresh, daemon=True, name="portfolio-sectors").start()
+            except RuntimeError:
+                with cls._sector_lock:
+                    cls._sector_refresh_event = None
+                event.set()
+                logger.exception("Could not start portfolio industry classification refresh")
+
+        event.wait(timeout=SECTOR_LOOKUP_WAIT_SECONDS)
+        # Rebuild amounts from this request's snapshot, including any partial cache
+        # progress. Never reuse another request/account's risk report or weights.
+        return self._build_sector_concentration(
+            snapshot, threshold_pct, as_of_date=as_of_date, fetch_missing=False,
+        )
+
+    def _read_sector_cache(self, symbol: str, market: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        key = (str(self.config.database_path), symbol, market)
+        cls = PortfolioRiskService
+        with cls._sector_lock:
+            entry = cls._sector_cache.get(key)
+            if entry is None:
+                return False, None, None
+            expires_at, sector, error = entry
+            if expires_at <= time.monotonic():
+                del cls._sector_cache[key]
+                return False, None, None
+            cls._sector_cache.move_to_end(key)
+            return True, sector, error
+
+    def _write_sector_cache(self, symbol: str, market: str, sector: Optional[str], error: Optional[str]) -> None:
+        key = (str(self.config.database_path), symbol, market)
+        ttl = SECTOR_CACHE_TTL_SECONDS if sector else SECTOR_FAILURE_CACHE_TTL_SECONDS
+        cls = PortfolioRiskService
+        with cls._sector_lock:
+            cls._sector_cache[key] = (time.monotonic() + ttl, sector, error)
+            cls._sector_cache.move_to_end(key)
+            while len(cls._sector_cache) > SECTOR_CACHE_MAX_ENTRIES:
+                cls._sector_cache.popitem(last=False)
+
     def _resolve_primary_sector(
         self,
         *,
@@ -394,26 +486,33 @@ class PortfolioRiskService:
         board_cache: Dict[Tuple[str, str], str],
         coverage: Dict[str, int],
         errors: List[str],
+        fetch_missing: bool = True,
     ) -> str:
         cache_key = (symbol, market)
-        if cache_key in board_cache:
-            return board_cache[cache_key]
-
-        if market != "cn":
+        if market != "cn" or _is_etf_code(symbol):
             coverage["unclassified_count"] += 1
+            coverage["unsupported_count"] += 1
             board_cache[cache_key] = "UNCLASSIFIED"
             return board_cache[cache_key]
 
-        try:
-            boards = self._fetch_belong_boards(symbol)
-            sector_name = self._pick_primary_board_name(boards)
-            if sector_name:
-                coverage["classified_count"] += 1
-                board_cache[cache_key] = sector_name
-                return board_cache[cache_key]
-        except Exception as exc:
+        known, sector_name, error = self._read_sector_cache(symbol, market)
+        if not known and fetch_missing:
+            try:
+                boards = self._fetch_belong_boards(symbol)
+                sector_name = self._pick_primary_board_name(boards)
+            except Exception as exc:
+                error = str(exc)
+            self._write_sector_cache(symbol, market, sector_name, error)
+            known = True
+        if not known:
+            coverage["lookup_pending_count"] += 1
+        if error:
             coverage["failed_count"] += 1
-            errors.append(f"{symbol}: {exc}")
+            errors.append(f"{symbol}: {error}")
+        if sector_name:
+            coverage["classified_count"] += 1
+            board_cache[cache_key] = sector_name
+            return sector_name
 
         coverage["unclassified_count"] += 1
         board_cache[cache_key] = "UNCLASSIFIED"
@@ -478,6 +577,17 @@ class PortfolioRiskService:
             account_id=account_id,
             lookback_days=lookback_days,
         )
+        # Old empty-account snapshots are not observations of today's imported
+        # holdings. Only include each account from its first ledger activity.
+        first_activity = {
+            aid: self.repo.get_first_activity_date(account_id=aid, as_of=as_of_date)
+            for aid in {row.account_id for row in rows}
+        }
+        rows = [
+            row for row in rows
+            if first_activity[row.account_id] is not None
+            and row.snapshot_date >= first_activity[row.account_id]
+        ]
         if not rows:
             return {
                 "series_points": 0,

@@ -72,6 +72,13 @@ STOCK_NAME_MAP = {
     "688111": "金山办公",
     "688256": "寒武纪",
     "688981": "中芯国际",
+    # === ETFs (trading short names; fallback when the generated index omits funds) ===
+    "159599": "芯片ETF东财",
+    "159278": "机器人ETF鹏华",
+    "159218": "卫星ETF招商",
+    "589330": "科创200ETF东财",
+    "159516": "半导体设备ETF国泰",
+    "513180": "恒生科技ETF华夏",
     # === US stocks ===
     "AAPL": "苹果",
     "TSLA": "特斯拉",

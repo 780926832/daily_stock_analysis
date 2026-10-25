@@ -25,6 +25,8 @@ from typing import List, Dict, Any
 # Add the project root to sys.path.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from data_provider.base import _is_etf_code
+
 try:
     from pypinyin import lazy_pinyin
     PYPINYIN_AVAILABLE = True
@@ -115,6 +117,8 @@ def determine_market_and_type(code: str) -> tuple:
                 return 'HK', 'stock'
             return 'CN', 'stock'
         elif len(code) == 6:
+            if _is_etf_code(code):
+                return 'CN', 'etf'
             # Six digits: A-share universe.
             if code.startswith('6'):
                 return 'CN', 'stock'  # Shanghai
@@ -159,6 +163,8 @@ def build_canonical_code(code: str, market: str) -> str:
     A-shares need to distinguish between SH/SZ/BJ, cannot rely solely on the general CN -> SH mapping.
     """
     if market == 'CN' and code.isdigit() and len(code) == 6:
+        if _is_etf_code(code):
+            return f"{code}.{'SH' if code.startswith('5') else 'SZ'}"
         # Shanghai Stock Exchange (SH)
         # 60xxxx: Main board, 688xxx: STAR market, 900xxx: B-shares
         if code.startswith(('6', '900')):

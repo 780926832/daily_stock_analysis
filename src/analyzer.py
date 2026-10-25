@@ -2701,6 +2701,20 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 .replace("{default_skill_policy_section}", default_skill_policy_section)
                 .replace("{skills_section}", skills_section)
             )
+        if use_english_template:
+            base_prompt += """
+
+## JSON response contract
+
+Return exactly one JSON object with the complete field hierarchy above. Do not add Markdown code fences, headings, company-name confirmations, explanations, or checklists outside the object. Put all requested name confirmations, self-checks, position advice, and risk disclosures inside the existing JSON fields. `analysis_summary` must contain a concrete analysis, not a completion placeholder. Preserve missing-data disclosures and never invent unavailable data.
+"""
+        else:
+            base_prompt += """
+
+## JSON 响应约束
+
+最终响应必须恰好是一个 JSON 对象，并保留上方完整字段层级。禁止在对象外添加 Markdown 代码围栏、标题、股票名称确认、解释或检查清单；名称确认、自查、持仓建议和风险说明均写入现有 JSON 字段。`analysis_summary` 必须为具体分析摘要，不得以“分析完成”或“待补充”替代。保留数据缺失说明，严禁编造不可用数据。
+"""
         if lang == "en":
             return base_prompt + """
 
@@ -4174,9 +4188,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
+            analysis_max_tokens = getattr(config, "llm_analysis_max_tokens", 8192)
+            if not isinstance(analysis_max_tokens, int) or isinstance(analysis_max_tokens, bool):
+                analysis_max_tokens = 8192
             generation_config = {
                 "temperature": config.llm_temperature,
-                "max_output_tokens": 8192,
+                "max_output_tokens": analysis_max_tokens,
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")

@@ -59,6 +59,50 @@ def _install_successful_codex_probe(monkeypatch, *, version: str = "codex-cli te
     return calls
 
 
+@pytest.mark.parametrize(
+    ("overrides", "complete"),
+    [
+        ({}, True),
+        ({"AGENT_MODE": "false"}, False),
+        ({"AGENT_ARCH": "multi"}, False),
+        ({"AGENT_ORCHESTRATOR_TIMEOUT_S": "0"}, False),
+    ],
+)
+def test_setup_checks_selected_codex_chat_without_provider_keys(monkeypatch, tmp_path, overrides, complete):
+    from unittest.mock import patch
+
+    from src.core.config_manager import ConfigManager
+    from src.services.system_config_service import SystemConfigService
+
+    values = {
+        "GENERATION_BACKEND": "codex_cli",
+        "GENERATION_FALLBACK_BACKEND": "",
+        "AGENT_BACKEND": "codex_app_server",
+        "AGENT_ARCH": "single",
+        "AGENT_ORCHESTRATOR_TIMEOUT_S": "600",
+        "STOCK_LIST": "600519",
+        **overrides,
+    }
+    env_path = tmp_path / ".env"
+    env_path.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n")
+    service = SystemConfigService(manager=ConfigManager(env_path=env_path))
+    monkeypatch.setattr("src.services.system_config_service.shutil.which", lambda _name: "/usr/local/bin/codex")
+    monkeypatch.setattr("src.services.agent_backend_status_service.is_native_windows", lambda: False)
+    calls = _install_successful_codex_probe(monkeypatch)
+    with patch.dict(os.environ, {}, clear=True):
+        status = service.get_setup_status()
+
+    checks = {item["key"]: item for item in status["checks"]}
+    assert status["is_complete"] is complete
+    assert checks["llm_agent"]["status"] == ("configured" if complete else "needs_action")
+    if complete:
+        assert "首次问股" in checks["llm_agent"]["message"]
+        assert any("generate-json-schema" in argv for argv in calls)
+    else:
+        assert "llm_agent" in status["required_missing_keys"]
+        assert calls == []
+
+
 def test_auto_status_keeps_litellm_route_and_flat_contract() -> None:
     payload = AgentBackendStatusService(
         effective_map={

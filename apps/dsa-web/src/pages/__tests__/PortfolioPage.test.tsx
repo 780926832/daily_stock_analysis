@@ -890,7 +890,8 @@ describe('PortfolioPage FX refresh', () => {
     const drawdownFlag = screen.getByText('回撤').closest('div.rounded-xl');
     expect(drawdownFlag).not.toBeNull();
     expect(within(drawdownFlag as HTMLElement).getByText('--')).toBeInTheDocument();
-    expect(within(drawdownFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(within(drawdownFlag as HTMLElement).getByText('不可用')).toBeInTheDocument();
+    expect(within(drawdownFlag as HTMLElement).getByText('有效净值记录不足 2 天，暂无法计算回撤')).toBeInTheDocument();
   });
 
   it('treats one-point drawdown as unavailable because no decline can be measured', async () => {
@@ -910,7 +911,41 @@ describe('PortfolioPage FX refresh', () => {
     const drawdownFlag = screen.getByText('回撤').closest('div.rounded-xl');
     expect(drawdownFlag).not.toBeNull();
     expect(within(drawdownFlag as HTMLElement).getByText('--')).toBeInTheDocument();
-    expect(within(drawdownFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(within(drawdownFlag as HTMLElement).getByText('不可用')).toBeInTheDocument();
+    expect(within(drawdownFlag as HTMLElement).getByText('有效净值记录不足 2 天，暂无法计算回撤')).toBeInTheDocument();
+  });
+
+  it('shows pending industries while keeping independent risk flags available', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false, positions: [makePosition()] }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: { totalMarketValue: 1600, topWeightPct: 100, alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 1600, weightPct: 100, isAlert: true }] },
+      sectorConcentration: { totalMarketValue: 1600, topWeightPct: 100, alert: true,
+        topSectors: [{ sector: 'UNCLASSIFIED', marketValueBase: 1600, weightPct: 100, symbolCount: 1, isAlert: true }],
+        coverage: { classifiedCount: 0, unclassifiedCount: 1, failedCount: 0, lookupPendingCount: 1 }, errors: [] },
+    }));
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    expect(screen.getByText('行业分类正在补充，请稍后刷新')).toBeInTheDocument();
+    const concentration = screen.getByText('个股集中').closest('div.rounded-xl') as HTMLElement;
+    expect(within(concentration).getByText('100.00%')).toBeInTheDocument();
+    const stopLoss = screen.getByText('止损').closest('div.rounded-xl') as HTMLElement;
+    expect(within(stopLoss).getByText('0')).toBeInTheDocument();
+    const ai = screen.getByText('AI 信号').closest('div.rounded-xl') as HTMLElement;
+    expect(within(ai).getByText('0')).toBeInTheDocument();
+  });
+
+  it('explains unsupported sector coverage instead of presenting a full industry alert', async () => {
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: { totalMarketValue: 2000, topWeightPct: 100, alert: true,
+        topSectors: [{ sector: 'UNCLASSIFIED', marketValueBase: 2000, weightPct: 100, symbolCount: 2, isAlert: true }],
+        coverage: { classifiedCount: 0, unclassifiedCount: 2, failedCount: 0, unsupportedCount: 2 }, errors: [] },
+    }));
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const sector = screen.getByText('行业集中').closest('div.rounded-xl') as HTMLElement;
+    expect(within(sector).getByText(/ETF 穿透及境外行业分类暂缺/)).toBeInTheDocument();
+    expect(within(sector).getByText('不可用')).toBeInTheDocument();
   });
 
   it('treats stale-FX drawdown as unavailable instead of normal', async () => {
@@ -1256,7 +1291,8 @@ describe('PortfolioPage FX refresh', () => {
 
     const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
     expect(sectorFlag).not.toBeNull();
-    expect(within(sectorFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(within(sectorFlag as HTMLElement).getByText('不可用')).toBeInTheDocument();
+    expect(within(sectorFlag as HTMLElement).getByText(/行业分类不完整/)).toBeInTheDocument();
     expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
 
     const concentrationCard = screen.getByText('行业数据暂不可用，当前展示个股集中度').closest('div.rounded-2xl');
@@ -1332,7 +1368,7 @@ describe('PortfolioPage FX refresh', () => {
     await waitForInitialLoad();
     const flag = screen.getByText('行业集中').closest('div.rounded-xl');
     expect(within(flag as HTMLElement).getByText('--')).toBeInTheDocument();
-    expect(within(flag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(within(flag as HTMLElement).getAllByText('不可用')).toHaveLength(coverage.unclassifiedCount > 0 ? 1 : 2);
     expect(screen.getByText('板块集中度告警: 不可用')).toBeInTheDocument();
     expect(screen.queryByText('Top1: Technology')).not.toBeInTheDocument();
   });

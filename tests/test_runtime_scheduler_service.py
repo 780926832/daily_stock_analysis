@@ -109,6 +109,16 @@ def _successful_spawn_runner(result_queue, stock_codes, schedule_args_overrides)
     result_queue.put({"success": True, "error": None})
 
 
+def _selected_hot_stocks_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    result_queue.put({"phase": "stock_selection", "stock_codes": ["002639", "600418"]})
+    result_queue.put({"success": True, "error": None})
+
+
+def _selected_hot_stocks_blocking_runner(result_queue, stock_codes, schedule_args_overrides):
+    result_queue.put({"phase": "stock_selection", "stock_codes": ["002639", "600418"]})
+    time.sleep(15)
+
+
 def _large_failure_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
     result_queue.put({"success": False, "error": "x" * (1024 * 1024)})
 
@@ -460,6 +470,38 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
             time.sleep(0.05)
 
         self.assertTrue(service.status()["last_error"].startswith("x"))
+
+    def test_hot_selection_event_is_progress_not_the_final_worker_result(self) -> None:
+        config = SimpleNamespace(schedule_stock_source="hot", schedule_hot_stock_count=2)
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _selected_hot_stocks_spawn_runner
+        service._analysis_timeout_seconds = lambda: 5
+        service._run_analysis_with_watchdog()
+        self.assertIsNotNone(service._last_success_at)
+        self.assertIsNone(service._last_error)
+
+    def test_hot_timeout_partial_uses_the_selected_pool_not_the_watchlist(self) -> None:
+        config = SimpleNamespace(
+            schedule_stock_source="hot", schedule_hot_stock_count=2, stock_list=["600519"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _selected_hot_stocks_blocking_runner
+        service._analysis_timeout_seconds = lambda: 4
+        with patch.object(service, "_apply_timeout_partial_outcome") as partial:
+            service._run_analysis_with_watchdog()
+        partial.assert_called_once()
+        self.assertEqual(partial.call_args.args[0]["stock_codes"], ["002639", "600418"])
+        self.assertIn("timed out", service._last_error)
+
+    def test_timeout_before_hot_selection_has_no_watchlist_partial_notification(self) -> None:
+        config = SimpleNamespace(schedule_stock_source="hot", stock_list=["600519"])
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _blocking_spawn_runner
+        service._analysis_timeout_seconds = lambda: 4
+        with patch.object(service, "_apply_timeout_partial_outcome") as partial:
+            service._run_analysis_with_watchdog()
+        partial.assert_not_called()
+        self.assertIn("timed out", service._last_error)
 
     @unittest.skipUnless(os.name == "posix", "POSIX process-group regression")
     def test_worker_exit_without_result_terminates_remaining_process_group(self) -> None:

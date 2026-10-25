@@ -3640,12 +3640,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             context['yesterday'] = yesterday_data.to_dict()
             
             # 计算相比昨日的变化
-            if yesterday_data.volume and yesterday_data.volume > 0:
+            if today_data.volume is not None and yesterday_data.volume and yesterday_data.volume > 0:
                 context['volume_change_ratio'] = round(
                     today_data.volume / yesterday_data.volume, 2
                 )
             
-            if yesterday_data.close and yesterday_data.close > 0:
+            if today_data.close is not None and yesterday_data.close and yesterday_data.close > 0:
                 context['price_change_ratio'] = round(
                     (today_data.close - yesterday_data.close) / yesterday_data.close * 100, 2
                 )

@@ -27,6 +27,10 @@ Web 持仓页新增“风险与暴露看板”，放在组合总览指标和持�
 
 ## 边界
 
+- 持仓明细的“名称 / 代码”列读取快照可选字段 `stock_name`（Web 为 `stockName`），复用本地证券名称索引与公共名称映射，支持 A 股、ETF、港股及已收录的其他市场。名称解析不联网，不影响估值与风险请求耗时；未知证券或旧版接口缺少名称时仍显示代码。无需新增 API Key 或数据库迁移，既有持仓数量、成本、现金和交易流水不变。ETF 名称补入公共映射后，生成证券目录时继续保留 ETF 类型及沪深交易所身份。
+- 行业查询在请求中最多等待 2 秒；后台最多一个 daemon 工作线程复用现有行业数据源补充分类，不积压重复任务。仅缓存证券分类（不缓存账户金额或权重），成功结果有效 24 小时，空结果/失败缓存 5 分钟，进程内最多 2048 项。重启会清空缓存。后台查询未完成时，风险接口仍返回集中度、止损、回撤和 AI 信号；`sector_concentration.coverage.lookup_pending_count` 披露待补充数量，页面提示稍后刷新。
+- ETF 不以基金名称或概念板块冒充成分行业，境外证券也不套用 A 股分类；两者暂记入 `coverage.unsupported_count` 和未分类数量，不发起无效的 A 股板块查询。分类不足时，页面显示已分类/未分类数量及缺少 ETF 穿透、境外行业数据的原因，仍使用已验证的个股集中度作为饼图回退。
+- 回撤排除各账户首次交易/资金流水之前的空账户快照；有效净值日期不足两个时明确提示“有效净值记录不足 2 天”，保留未知状态，不显示为正常零回撤。期初截图导入无法还原历史交易与历史净值，需后续积累有效估值或补充历史账本。
 - 数据来自 snapshot 和 risk 响应。snapshot 追加可选字段 `accounts[].totalMarketValueAggregate`（API 原始字段 `total_market_value_aggregate`），复用现有汇率换算结果，表示该账户以顶层 `snapshot.currency` 计价的市值；原有账户与持仓本币金额保持不变，无数据库变更。
 - `/api/v1/portfolio/risk` 不可用或返回空风险块时，依赖服务端风险结果的旗标显示为“不可用”，不伪装成“正常”。
 - 个股集中度只有在 `topWeightPct`、block-level `alert`、数组 `topPositions` 以及完整有效的 `topPositions` 同时存在时才可用：每行必须有有效 symbol 和有限非负权重，首行权重必须为正；后台四位小数舍入后的零权重尾行仍有效（绘图时省略零面积扇区），权重不超过 100，按权重降序排列，首行权重必须与 `topWeightPct` 一致；不得过滤坏行后将另一只股票冒充 Top1；不得在显示 `Top1: --` 时宣称“正常”或“需处理”。`UNCLASSIFIED`、非数组 `topSectors`、无效行业标签、非 number/非有限/负数的 `weightPct`、`coverage.unclassifiedCount`、`coverage.failedCount` 或行业错误表示行业分类覆盖不完整，不作为完整行业风险展示；`coverage.classifiedCount` 必须为正数，`unclassifiedCount` 和 `failedCount` 必须为零，三个 coverage counter 与 `errors` 数组都必须显式存在，缺字段也按不可用处理。全未分类、无效行或部分覆盖时，仅在个股集中度块自身完整可用时回退到个股饼图；个股集中度也缺字段时显示空态，避免把局部 `topPositions` 伪装成有效图表。行业行同样必须按权重降序，首行权重与 `sectorConcentration.topWeightPct` 一致且每行权重不超过 100，允许有效分类的舍入零权重尾行；乱序或不一致时行业旗标/图表降级，并仅在个股证据完整时显示个股饼图。行业风险 badge 与详情统一使用已校验的 block-level `sectorConcentration.alert`，不依赖可能缺失或不一致的 top-row `isAlert`。

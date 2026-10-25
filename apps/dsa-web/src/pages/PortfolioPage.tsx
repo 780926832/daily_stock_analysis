@@ -146,6 +146,13 @@ const PORTFOLIO_RISK_DASHBOARD_TEXT = {
     positions: '持仓',
     snapshotUnavailable: '持仓快照不可用',
     snapshotUnavailableDescription: '无法确认持仓数量或估值，请刷新重试。',
+    riskRequestFailed: '风险数据请求失败，请刷新重试',
+    sectorPending: '行业分类正在补充，请稍后刷新',
+    sectorCoverage: '行业分类不完整',
+    classified: '已分类',
+    unclassified: '未分类',
+    unsupportedSectors: 'ETF 穿透及境外行业分类暂缺',
+    insufficientHistory: '有效净值记录不足 2 天，暂无法计算回撤',
   },
   en: {
     title: 'Risk and exposure dashboard',
@@ -173,6 +180,13 @@ const PORTFOLIO_RISK_DASHBOARD_TEXT = {
     positions: 'Positions',
     snapshotUnavailable: 'Portfolio snapshot unavailable',
     snapshotUnavailableDescription: 'Holdings and valuation are unknown. Refresh to try again.',
+    riskRequestFailed: 'Risk data request failed; refresh to retry',
+    sectorPending: 'Industry classifications are loading; refresh shortly',
+    sectorCoverage: 'Incomplete industry classification',
+    classified: 'Classified',
+    unclassified: 'Unclassified',
+    unsupportedSectors: 'ETF look-through and overseas industries are not available',
+    insufficientHistory: 'Drawdown needs at least 2 days of portfolio valuations',
   },
 } as const;
 
@@ -460,41 +474,55 @@ function buildPortfolioRiskFlags(
   const availability = getPortfolioRiskAvailability(risk, snapshot);
   const snapshotAvailable = snapshot !== null;
   const defensiveSignalCount = availability.decisionSignalRisk ? (decisionSignalRisk?.total ?? 0) : 0;
+  const unavailableDetail = risk === null ? text.riskRequestFailed : text.unavailable;
+  const coverage = sectorConcentration?.coverage;
+  let sectorUnavailableDetail: string = unavailableDetail;
+  if ((coverage?.lookupPendingCount ?? 0) > 0) {
+    sectorUnavailableDetail = text.sectorPending;
+  } else if ((coverage?.unclassifiedCount ?? 0) > 0) {
+    sectorUnavailableDetail = `${text.sectorCoverage} · ${text.classified} ${coverage?.classifiedCount ?? 0} · ${text.unclassified} ${coverage?.unclassifiedCount}`;
+    if ((coverage?.unsupportedCount ?? 0) > 0) {
+      sectorUnavailableDetail += ` · ${text.unsupportedSectors}`;
+    }
+  }
+  const drawdownUnavailableDetail = hasNumberField(drawdown, 'seriesPoints') && drawdown.seriesPoints < 2
+    ? text.insufficientHistory
+    : unavailableDetail;
 
   return [
     {
       key: 'concentration',
       label: text.concentration,
       value: availability.concentration ? formatPct(concentration?.topWeightPct) : '--',
-      detail: availability.concentration ? `${text.topPosition}: ${topPosition?.symbol}` : text.unavailable,
+      detail: availability.concentration ? `${text.topPosition}: ${topPosition?.symbol}` : unavailableDetail,
       tone: availability.concentration ? (concentration?.alert ? 'danger' : 'success') : 'neutral',
     },
     {
       key: 'sector',
       label: text.sector,
       value: availability.sectorConcentration ? formatPct(topClassifiedSector?.weightPct) : '--',
-      detail: availability.sectorConcentration ? `${text.topSector}: ${topClassifiedSector?.sector ?? '--'}` : text.unavailable,
+      detail: availability.sectorConcentration ? `${text.topSector}: ${topClassifiedSector?.sector ?? '--'}` : sectorUnavailableDetail,
       tone: availability.sectorConcentration ? (sectorConcentration?.alert ? 'danger' : 'success') : 'neutral',
     },
     {
       key: 'drawdown',
       label: text.drawdown,
       value: availability.drawdown ? formatPct(drawdown?.currentDrawdownPct) : '--',
-      detail: availability.drawdown ? `${text.maxDrawdown}: ${formatPct(drawdown?.maxDrawdownPct)}` : text.unavailable,
+      detail: availability.drawdown ? `${text.maxDrawdown}: ${formatPct(drawdown?.maxDrawdownPct)}` : drawdownUnavailableDetail,
       tone: availability.drawdown ? (drawdown?.alert ? 'danger' : 'success') : 'neutral',
     },
     {
       key: 'stop-loss',
       label: text.stopLoss,
       value: availability.stopLoss ? String(stopLoss?.triggeredCount ?? 0) : '--',
-      detail: availability.stopLoss ? `${text.triggered}: ${stopLoss?.triggeredCount ?? 0} · ${text.near}: ${stopLoss?.nearCount ?? 0}` : text.unavailable,
+      detail: availability.stopLoss ? `${text.triggered}: ${stopLoss?.triggeredCount ?? 0} · ${text.near}: ${stopLoss?.nearCount ?? 0}` : unavailableDetail,
       tone: availability.stopLoss ? (stopLoss?.nearAlert ? 'danger' : 'success') : 'neutral',
     },
     {
       key: 'ai-signal',
       label: text.aiSignal,
       value: availability.decisionSignalRisk ? String(defensiveSignalCount) : '--',
-      detail: availability.decisionSignalRisk ? `${text.active}: ${defensiveSignalCount}` : text.unavailable,
+      detail: availability.decisionSignalRisk ? `${text.active}: ${defensiveSignalCount}` : unavailableDetail,
       tone: availability.decisionSignalRisk ? (defensiveSignalCount > 0 ? 'warning' : 'success') : 'neutral',
     },
     {
@@ -1731,7 +1759,7 @@ const PortfolioPage: React.FC = () => {
               <table className="min-w-[860px] w-full text-sm">
                 <thead className="text-xs text-secondary border-b border-white/10">
                   <tr>
-                    <th className="text-left py-2 pr-2">{text.account}</th>
+                    <th className="whitespace-nowrap text-left py-2 pr-2">{text.account}</th>
                     <th className="text-left py-2 pr-2">{text.code}</th>
                     <th className="text-right py-2 pr-2">{text.quantity}</th>
                     <th className="text-right py-2 pr-2">{text.avgCost}</th>
@@ -1750,8 +1778,11 @@ const PortfolioPage: React.FC = () => {
                     const signal = signalByPositionKey.get(rowKey);
                     return (
                     <tr key={rowKey} className="border-b border-white/5">
-                      <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
-                      <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
+                      <td className="whitespace-nowrap py-2 pr-2 text-secondary">{row.accountName}</td>
+                      <td className="min-w-[9rem] py-2 pr-2">
+                        {row.stockName?.trim() ? <div className="font-medium text-foreground">{row.stockName}</div> : null}
+                        <div className={`font-mono ${row.stockName?.trim() ? 'text-xs text-secondary' : 'text-foreground'}`}>{row.symbol}</div>
+                      </td>
                       <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
                       <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
                       <td className="py-2 pr-2 text-right">

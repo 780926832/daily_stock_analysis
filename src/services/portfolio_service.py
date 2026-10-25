@@ -13,6 +13,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
+from src.data.stock_index_loader import get_index_stock_name
+from src.data.stock_mapping import STOCK_NAME_MAP
 from src.repositories.portfolio_repo import (
     DuplicateTradeDedupHashError,
     DuplicateTradeUidError,
@@ -1117,6 +1119,7 @@ class PortfolioService:
             position_rows.append(
                 {
                     "symbol": symbol,
+                    "stock_name": self._resolve_position_name(symbol),
                     "market": market,
                     "currency": currency,
                     "quantity": round(qty, 8),
@@ -1141,6 +1144,16 @@ class PortfolioService:
             total_cost_base += cost_base
 
         return position_rows, lot_rows, market_value_base, total_cost_base, fx_stale
+
+    @staticmethod
+    def _resolve_position_name(symbol: str) -> Optional[str]:
+        """Resolve display names locally so quote outages cannot delay holdings."""
+        normalized = normalize_stock_code(symbol)
+        return (
+            get_index_stock_name(symbol)
+            or get_index_stock_name(normalized)
+            or STOCK_NAME_MAP.get(normalized.removeprefix("HK"))
+        )
 
     def _resolve_position_price(
         self,

@@ -11,14 +11,16 @@ import time
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional
 
 
 class ScheduledAnalysisSkipped(Exception):
     """The same scheduled workload was already claimed by another runner."""
 
 
-def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) -> bool:
+def claim_scheduled_analysis(
+    config: Any, args: Any, scheduled_for: datetime, *, stock_codes: Optional[List[str]] = None,
+) -> bool:
     """Claim a prepared workload at its original due instant, not the poll time.
 
     Naive times use the process timezone, as the schedule library does. SQLite
@@ -26,9 +28,13 @@ def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) ->
     reports. Callers must execute exactly this snapshot without refreshing it.
     """
     portfolio = getattr(args, "portfolio", None)
+    from src.services.scheduled_stock_selection import uses_hot_stock_pool
+
+    hot_pool = uses_hot_stock_pool(config, args, stock_codes)
     workload = {
-        "stocks": [] if portfolio else sorted({
-            str(code).strip().upper() for code in getattr(config, "stock_list", [])
+        "stocks": [] if portfolio or hot_pool else sorted({
+            str(code).strip().upper()
+            for code in (stock_codes if stock_codes is not None else getattr(config, "stock_list", []))
         }),
         "portfolio": portfolio,
         "options": {
@@ -40,6 +46,10 @@ def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) ->
         "report_language": getattr(config, "report_language", "zh"),
         "report_type": getattr(config, "report_type", "simple"),
     }
+    if hot_pool:
+        # Claim the selection policy before network I/O. Two runners must not
+        # send duplicate reports just because their live rankings differ.
+        workload["hot_stock_count"] = config.schedule_hot_stock_count
     workload_key = hashlib.sha256(
         json.dumps(workload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -69,6 +79,7 @@ def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) ->
 
 def run_claimed_scheduled_analysis(
     config: Any, args: Any, scheduled_for: datetime, runner: Callable[[Any], Any],
+    *, stock_codes: Optional[List[str]] = None,
 ) -> Any:
     """Freeze, claim and execute the same workload at the final execution boundary.
 
@@ -83,7 +94,8 @@ def run_claimed_scheduled_analysis(
             refresh()
         snapshot.stock_list = list(getattr(snapshot, "stock_list", []))
     try:
-        acquired = claim_scheduled_analysis(snapshot, args, scheduled_for)
+        claim_kwargs = {} if stock_codes is None else {"stock_codes": stock_codes}
+        acquired = claim_scheduled_analysis(snapshot, args, scheduled_for, **claim_kwargs)
     except Exception as exc:
         raise RuntimeError(f"scheduled occurrence claim failed: {exc}") from exc
     if not acquired:

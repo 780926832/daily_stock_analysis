@@ -247,6 +247,7 @@ class EnglishAnalyzeMessagesTestCase(unittest.TestCase):
         def _capture(prompt, generation_config, **kwargs):
             captured["user"] = prompt
             captured["system"] = kwargs.get("system_prompt")
+            captured["generation_config"] = generation_config
             raise RuntimeError("stop after capturing messages")
 
         with patch.object(analyzer, "_call_litellm", side_effect=_capture):
@@ -257,6 +258,11 @@ class EnglishAnalyzeMessagesTestCase(unittest.TestCase):
         self.assertIn("US stock", captured["system"])
         self.assertIn("## Output Language (highest priority)", captured["system"])
         self.assertIn("### Output language requirements (highest priority)", captured["user"])
+        self.assertEqual(captured["generation_config"]["max_output_tokens"], 8192)
+        analyzer._config_override.llm_analysis_max_tokens = 32768
+        with patch.object(analyzer, "_call_litellm", side_effect=_capture):
+            analyzer.analyze(_rich_context(), news_context="AAPL headline")
+        self.assertEqual(captured["generation_config"]["max_output_tokens"], 32768)
 
 
 if __name__ == "__main__":

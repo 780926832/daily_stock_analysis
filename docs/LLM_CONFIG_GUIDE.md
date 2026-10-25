@@ -95,6 +95,8 @@ AGENT_BACKEND=auto
 
 Web 启用步骤：打开「设置 → Agent 设置 → 问股生成方式」，选择「Codex 本地 Agent（实验）」，确认架构为「单 Agent」，并将 Agent 整体时限设置为大于 0 后保存。设置页只检查当前配置、本机 Codex 命令和所需 App Server 协议是否允许尝试，不登录、不调用模型，也不读取股票数据。保存后可直接回到问股页提问；第一次问题就是第一次真实执行。要恢复原有行为，选择「自动（推荐）」并保存。
 
+首页的基础配置检查会使用所选 Codex 问股后端的同一配置与协议检查，不要求额外配置 LiteLLM API Key。检查通过只表示可以尝试；显式 `AGENT_MODE=false`、不支持的架构或无效时限仍会阻止就绪。仅配置 `GENERATION_BACKEND=codex_cli` 不会自动启用 Codex 问股。
+
 - Codex 必须安装并登录在**运行 DSA 后端的设备**上；DSA 不读取或保存 Codex 凭据，App Server 进程使用 Codex 自身登录态。Docker、远程服务器和 Desktop 的 PATH / 登录态彼此独立。在 Desktop 中从 Finder/Dock 启动时，后端只继承 Desktop 构造的真实 PATH；若状态提示找不到 Codex，请将 Codex CLI 安装到后端 PATH 可见位置并完全重启 DSA，不要只在另一个终端窗口验证。
 - Phase 6 的 Codex App Server Agent 当前支持 macOS、Linux，以及 DSA 后端完整运行于 WSL 的环境；原生 Windows 后端会在状态检查和 transport 启动前明确拒绝。此限制不影响 Phase 2 `GENERATION_BACKEND=codex_cli` 已有的 Windows 生成能力。
 - Codex 当前只开放已保存分析上下文、全局回测汇总和策略回测汇总的只读查询。本期只验证并承诺这三个工具的独立进程、停止、超时和回收闭环；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具未纳入本期验证，因此不会出现在 Codex 的工具列表中。需要这些能力时，请在 Web 中选择「默认模型」。明确股票代码或 Web 已选择的唯一股票只会为已开放的历史分析上下文工具建立股票范围；遇到同名歧义时不会猜测。
@@ -338,6 +340,43 @@ AGENT_CONTEXT_PROTECTED_TURNS=
 压缩只处理 `session_id` 下用户可见的 `user` / `assistant` 文本历史，不处理 provider trace、thinking blocks、tool calls 或 tool results，也不会改变同轮工具调用透传。三档 preset 分别是 `cost`（6000 tokens / 保护 2 轮）、`balanced`（12000 / 4）和 `long_context_raw_first`（24000 / 6）；trigger / protected 留空时跟随当前 profile，显式填写时覆盖 profile。
 
 问股 single-agent 路径会额外维护一条 provider-aware trace 分轨，用于 DeepSeek V4 thinking + tool-call 的跨轮协议回放：只有同一轮同时出现 `tool_calls` 与 `reasoning_content` 时才会按当前 `session_id + provider + model` 保存最近 3 条最小协议材料，并在下一轮按原始时序插回对应可见 assistant 回复之前。该 trace 只能原样保留或整段丢弃，不参与摘要、不写入 Web 会话消息、不新增 `.env` 配置；model/provider 不匹配、锚点已被 summary 覆盖或预算不足时会整段跳过。Claude extended thinking 本轮只覆盖 adapter/storage 级 opaque `thinking` / `redacted_thinking` / `signature` blocks plumbing 与离线 fixture，不声明生产端到端支持；multi-agent trace 注入仍是 follow-up。外部协议依据包括 DeepSeek thinking mode 文档（<https://api-docs.deepseek.com/guides/thinking_mode>）和 Anthropic Claude extended thinking 文档（<https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking>），LiteLLM 兼容窗口仍以 `requirements.txt` 的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0` 为准。
+
+### Kimi Code K3 接入
+
+Kimi Code 的 OpenAI 兼容地址为 `https://api.kimi.com/coding/v1`，与 Moonshot 开放平台的地址和密钥不同。先确认该 Key 的 `/models` 返回 `k3`。模型及推理档说明见 [Kimi Code 官方文档](https://www.kimi.com/code/docs/kimi-code/models.html)。
+
+在 `.env` 设置：
+
+```env
+LLM_KIMI_API_KEY=你的KimiCode密钥
+LITELLM_CONFIG=./litellm_config.kimi.yaml
+LITELLM_MODEL=openai/k3
+AGENT_LITELLM_MODEL=openai/k3
+GENERATION_BACKEND=litellm
+GENERATION_FALLBACK_BACKEND=
+AGENT_BACKEND=litellm
+AGENT_GENERATION_BACKEND=litellm
+LLM_TEMPERATURE=1.0
+LLM_ANALYSIS_MAX_TOKENS=32768
+```
+
+在项目根目录创建 `litellm_config.kimi.yaml`（该文件已被 Git 忽略）：
+
+```yaml
+model_list:
+  - model_name: openai/k3
+    litellm_params:
+      model: openai/k3
+      api_base: https://api.kimi.com/coding/v1
+      api_key: os.environ/LLM_KIMI_API_KEY
+      reasoning_effort: max
+      allowed_openai_params: [reasoning_effort]
+      temperature: 1.0
+```
+
+`allowed_openai_params` 让尚未收录 K3 的 LiteLLM 版本仍传递最高推理档 `max`。保留默认 thinking 模式；关闭 thinking 会改变模型路由。报告和「默认模型」问股共用此渠道，配置变更后重启服务或通过设置页热加载。问股发送工具参数时会将「字符串枚举 + string/null anyOf」化简为等价的字符串枚举，以避免 Kimi 的工具 schema 校验拒绝请求；原始工具描述、可接受的参数值及 MCP 描述保持不变。
+
+完整个股 JSON 报告的输出预算由 `LLM_ANALYSIS_MAX_TOKENS` 控制，默认 8192，范围 1024–65536。推理模型可能把 reasoning 计入同一预算；高推理档报告出现截断时可增加预算，例如设为 32768。该配置只影响个股报告生成，不改变问股和大盘复盘预算；更高预算可能增加响应时间与用量。
 
 ### 严格 temperature 模型兼容说明
 

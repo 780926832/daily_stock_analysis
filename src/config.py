@@ -961,6 +961,7 @@ class Config:
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
+    llm_analysis_max_tokens: int = 8192  # Stock-report completion budget, including reasoning
 
     # Provider prompt-cache controls. These do not control provider implicit cache.
     llm_prompt_cache_telemetry_enabled: bool = True
@@ -1259,6 +1260,8 @@ class Config:
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
+    schedule_stock_source: str = "watchlist"  # watchlist | hot; scheduled runs only
+    schedule_hot_stock_count: int = 10
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
@@ -1376,6 +1379,8 @@ class Config:
             "SCHEDULE_TIME",
             "SCHEDULE_TIMES",
             "SCHEDULE_RUN_IMMEDIATELY",
+            "SCHEDULE_STOCK_SOURCE",
+            "SCHEDULE_HOT_STOCK_COUNT",
         }
     )
     _BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
@@ -1882,6 +1887,10 @@ class Config:
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
+            llm_analysis_max_tokens=parse_env_int(
+                os.getenv('LLM_ANALYSIS_MAX_TOKENS'), 8192,
+                field_name='LLM_ANALYSIS_MAX_TOKENS', minimum=1024, maximum=65536,
+            ),
             litellm_config_path=litellm_config_path,
             llm_models_source=llm_models_source,
             llm_channels=llm_channels,
@@ -2267,6 +2276,15 @@ class Config:
                 fallback_time=(schedule_time_value or '18:00').strip() or '18:00',
             ),
             schedule_run_immediately=schedule_run_immediately,
+            schedule_stock_source=(cls._resolve_env_value(
+                'SCHEDULE_STOCK_SOURCE', default='watchlist', prefer_env_file=True,
+            ) or 'watchlist').strip().lower(),
+            schedule_hot_stock_count=parse_env_int(
+                cls._resolve_env_value(
+                    'SCHEDULE_HOT_STOCK_COUNT', default='10', prefer_env_file=True,
+                ), 10,
+                field_name='SCHEDULE_HOT_STOCK_COUNT', minimum=1, maximum=100,
+            ),
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
@@ -3187,6 +3205,13 @@ class Config:
             primary environment variable / field name it relates to.
         """
         issues: List[ConfigIssue] = []
+
+        if self.schedule_stock_source not in {"watchlist", "hot"}:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="SCHEDULE_STOCK_SOURCE 只支持 watchlist 或 hot。",
+                field="SCHEDULE_STOCK_SOURCE",
+            ))
 
         # --- Stock list ---
         if not self.stock_list:

@@ -220,6 +220,9 @@ journalctl -u stock-analyzer -f
 |--------|--------|------|
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
+| `SCHEDULE_TIMES` | Empty | Comma-separated daily execution times; empty uses `SCHEDULE_TIME` |
+| `SCHEDULE_STOCK_SOURCE` | `watchlist` | Scheduled pool: `watchlist` or a freshly fetched `hot` ranking |
+| `SCHEDULE_HOT_STOCK_COUNT` | `10` | Number of hot stocks, from 1 to 100 |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
 | `ANSPIRE_API_KEYS` | - | Anspire LLM and news search (recommended) |
 | `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
@@ -228,6 +231,25 @@ journalctl -u stock-analyzer -f
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 
 ---
+
+### Daily Hot-Stock Analysis
+
+The local Web/API service and CLI `--schedule` reuse the existing scheduler. To select the latest top 10 hot stocks at 12:00 and 18:00 Beijing time:
+
+```env
+SCHEDULE_ENABLED=true
+SCHEDULE_TIMES=12:00,18:00
+SCHEDULE_RUN_IMMEDIATELY=false
+SCHEDULE_STOCK_SOURCE=hot
+SCHEDULE_HOT_STOCK_COUNT=10
+TRADING_DAY_CHECK_ENABLED=true
+```
+
+System Settings exposes the pool, count and execution times. Each time starts analysis; completed reports are sent through configured notification channels. Keep the service running and use the `Asia/Shanghai` host timezone. Sleep or a stopped service prevents timely execution. With trading-day checks enabled, closed A-share market days skip ranking retrieval, analysis and notification.
+
+Each run fetches a fresh ranking through the existing Eastmoney popularity → Eastmoney rising-popularity → Xueqiu follow-ranking fallback chain, normalizes codes, removes duplicates and preserves ranking order. An incomplete or unavailable ranking fails the run instead of substituting old rankings or the watchlist. `STOCK_LIST` is never overwritten; ordinary manual analysis keeps its existing stock selection. Explicit `--stocks`, Futu portfolios and market-only runs take precedence. Web Run Now uses the configured scheduled pool.
+
+Shared-database occurrence claims identify the hot-pool policy and count before fetching, preventing duplicate reports across runners. Timeout partial notifications use the actual selected pool. Keep one scheduler owner. This feature creates no Codex automation and does not change the default GitHub Actions watchlist workflow. Roll back with `SCHEDULE_STOCK_SOURCE=watchlist`, or disable automatic execution with `SCHEDULE_ENABLED=false`.
 
 ## Proxy Configuration
 

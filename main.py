@@ -1246,16 +1246,39 @@ def run_scheduled_analysis(
 ) -> bool:
     """Run scheduled analysis with failures propagated to the scheduler."""
     scheduled_for = getattr(args, "_scheduled_for", None)
+
+    def execute(snapshot: Config) -> bool:
+        from src.services.scheduled_stock_selection import select_hot_stock_codes, uses_hot_stock_pool
+
+        selected_codes = stock_codes
+        source = getattr(snapshot, "schedule_stock_source", "watchlist")
+        if source not in {"watchlist", "hot"}:
+            raise ValueError("SCHEDULE_STOCK_SOURCE 只支持 watchlist 或 hot")
+        if uses_hot_stock_pool(snapshot, args, stock_codes):
+            if not getattr(args, "force_run", False) and getattr(snapshot, "trading_day_check_enabled", True):
+                from src.core.trading_calendar import get_open_markets_today
+
+                if "cn" not in get_open_markets_today():
+                    logger.info("A 股今日休市，跳过热门股抓取、分析和推送。")
+                    return True
+            selected_codes = select_hot_stock_codes(snapshot.schedule_hot_stock_count)
+            selection_callback = getattr(args, "_stock_selection_callback", None)
+            if callable(selection_callback):
+                selection_callback(selected_codes)
+        return run_full_analysis(
+            snapshot, args, selected_codes, raise_errors=True,
+            refresh_watchlist=scheduled_for is None,
+        )
+
     if scheduled_for is None:
-        return run_full_analysis(config, args, stock_codes, raise_errors=True)
+        return execute(config)
 
     from src.services.scheduled_analysis_claim import run_claimed_scheduled_analysis
 
     return run_claimed_scheduled_analysis(
         config, args, scheduled_for,
-        lambda snapshot: run_full_analysis(
-            snapshot, args, stock_codes, raise_errors=True, refresh_watchlist=False,
-        ),
+        execute,
+        stock_codes=stock_codes,
     )
 
 
